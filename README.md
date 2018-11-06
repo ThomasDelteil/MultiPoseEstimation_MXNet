@@ -70,4 +70,13 @@ Please cite the paper in your publications if it helps your research:
       booktitle = {The IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
       year = {2017}
       }
-	  
+      
+    @INPROCEEDINGS{8486591, 
+    author={H. Wang and W. P. An and X. Wang and L. Fang and J. Yuan}, 
+    booktitle={2018 IEEE International Conference on Multimedia and Expo (ICME)}, 
+    title={Magnify-Net for Multi-Person 2D Pose Estimation}, 
+    year={2018}, 
+    volume={}, 
+    number={}, 
+    pages={1-6}, 
+    month={July},}
