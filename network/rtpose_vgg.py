@@ -1,63 +1,40 @@
-"""CPM Pytorch Implementation"""
-
 from collections import OrderedDict
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data as data
-import torch.utils.model_zoo as model_zoo
-from torch.autograd import Variable
-from torch.nn import init
+import mxnet
+import mxnet as mx
+from mxnet import gluon, autograd, nd
+import mxnet.gluon.nn as nn
 
-def make_stages(cfg_dict):
-    """Builds CPM stages from a dictionary
-    Args:
-        cfg_dict: a dictionary
+
+def make_stage(prefix, blocks):
+    stage = nn.HybridSequential(prefix=prefix+'_')
+    with stage.name_scope():
+        for i, block in enumerate(blocks):
+            for k, v in block.items():
+                if 'pool' in k:
+                    stage.add(nn.MaxPool2D(prefix=k, pool_size=v[0], strides=v[1],
+                                            padding=v[2]))
+                else:
+                    activation = "relu" if i < len(blocks) - 1 else None
+                    stage.add(nn.Conv2D(prefix=k, channels=v[1],
+                                       kernel_size=v[2], strides=v[3],
+                                       padding=v[4], activation=activation))
+    return stage
+
+def make_vgg19_block():
+    """Builds the vgg19 using pre-trained data
     """
-    layers = []
-    for i in range(len(cfg_dict) - 1):
-        one_ = cfg_dict[i]
-        for k, v in one_.items():
-            if 'pool' in k:
-                layers += [nn.MaxPool2d(kernel_size=v[0], stride=v[1],
-                                        padding=v[2])]
-            else:
-                conv2d = nn.Conv2d(in_channels=v[0], out_channels=v[1],
-                                   kernel_size=v[2], stride=v[3],
-                                   padding=v[4])
-                layers += [conv2d, nn.ReLU(inplace=True)]
-    one_ = list(cfg_dict[-1].keys())
-    k = one_[0]
-    v = cfg_dict[-1][k]
-    conv2d = nn.Conv2d(in_channels=v[0], out_channels=v[1],
-                       kernel_size=v[2], stride=v[3], padding=v[4])
-    layers += [conv2d]
-    return nn.Sequential(*layers)
+    vgg19_block = nn.HybridSequential(prefix='vgg_19_')
+    vgg19 = gluon.model_zoo.vision.vgg19(pretrained=True)
+    with vgg19_block.name_scope():
+        for i in range(23):
+                vgg19_block.add(vgg19.features[i])
+        vgg19_block.add(nn.Conv2D(prefix='conv4_3_CPM', channels=256, kernel_size=3, padding=1))
+        vgg19_block.add(nn.Conv2D(prefix='conv4_4_CPM', channels=128, kernel_size=3, padding=1))
+    vgg19_block[-2:].initialize(mx.init.Normal(0.01))
+    return vgg19_block
 
-
-def make_vgg19_block(block):
-    """Builds a vgg19 block from a dictionary
-    Args:
-        block: a dictionary
-    """
-    layers = []
-    for i in range(len(block)):
-        one_ = block[i]
-        for k, v in one_.items():
-            if 'pool' in k:
-                layers += [nn.MaxPool2d(kernel_size=v[0], stride=v[1],
-                                        padding=v[2])]
-            else:
-                conv2d = nn.Conv2d(in_channels=v[0], out_channels=v[1],
-                                   kernel_size=v[2], stride=v[3],
-                                   padding=v[4])
-                layers += [conv2d, nn.ReLU(inplace=True)]
-    return nn.Sequential(*layers)
-
-
-
-def get_model(trunk='vgg19'):
+def get_model(trunk='vgg19', is_train=True):
     """Creates the whole CPM model
     Args:
         trunk: string, 'vgg19' or 'mobilenet'
@@ -65,24 +42,8 @@ def get_model(trunk='vgg19'):
     """
     blocks = {}
     # block0 is the preprocessing stage
-    if trunk == 'vgg19':
-        block0 = [{'conv1_1': [3, 64, 3, 1, 1]},
-                  {'conv1_2': [64, 64, 3, 1, 1]},
-                  {'pool1_stage1': [2, 2, 0]},
-                  {'conv2_1': [64, 128, 3, 1, 1]},
-                  {'conv2_2': [128, 128, 3, 1, 1]},
-                  {'pool2_stage1': [2, 2, 0]},
-                  {'conv3_1': [128, 256, 3, 1, 1]},
-                  {'conv3_2': [256, 256, 3, 1, 1]},
-                  {'conv3_3': [256, 256, 3, 1, 1]},
-                  {'conv3_4': [256, 256, 3, 1, 1]},
-                  {'pool3_stage1': [2, 2, 0]},
-                  {'conv4_1': [256, 512, 3, 1, 1]},
-                  {'conv4_2': [512, 512, 3, 1, 1]},
-                  {'conv4_3_CPM': [512, 256, 3, 1, 1]},
-                  {'conv4_4_CPM': [256, 128, 3, 1, 1]}]
 
-    elif trunk == 'mobilenet':
+    if trunk == 'mobilenet':
         block0 = [{'conv_bn': [3, 32, 2]},  # out: 3, 32, 184, 184
                   {'conv_dw1': [32, 64, 1]},  # out: 32, 64, 184, 184
                   {'conv_dw2': [64, 128, 2]},  # out: 64, 128, 92, 92
@@ -129,139 +90,84 @@ def get_model(trunk='vgg19'):
     models = {}
 
     if trunk == 'vgg19':
-        print("Bulding VGG19")
-        models['block0'] = make_vgg19_block(block0)
+        models['block0'] = make_vgg19_block()
+
 
     for k, v in blocks.items():
-        models[k] = make_stages(list(v))
+        models[k] = make_stage(k, list(v))
 
-    class rtpose_model(nn.Module):
-        def __init__(self, model_dict):
-            super(rtpose_model, self).__init__()
-            self.model0 = model_dict['block0']
-            self.model1_1 = model_dict['block1_1']
-            self.model2_1 = model_dict['block2_1']
-            self.model3_1 = model_dict['block3_1']
-            self.model4_1 = model_dict['block4_1']
-            self.model5_1 = model_dict['block5_1']
-            self.model6_1 = model_dict['block6_1']
+    class RTPose(nn.HybridBlock):
+        def __init__(self, model_dict, is_train=True):
+            super(RTPose, self).__init__()
+            with self.name_scope():
+                self.model0 = model_dict['block0']
+                self.model1_1 = model_dict['block1_1']
+                self.model2_1 = model_dict['block2_1']
+                self.model3_1 = model_dict['block3_1']
+                self.model4_1 = model_dict['block4_1']
+                self.model5_1 = model_dict['block5_1']
+                self.model6_1 = model_dict['block6_1']
 
-            self.model1_2 = model_dict['block1_2']
-            self.model2_2 = model_dict['block2_2']
-            self.model3_2 = model_dict['block3_2']
-            self.model4_2 = model_dict['block4_2']
-            self.model5_2 = model_dict['block5_2']
-            self.model6_2 = model_dict['block6_2']
+                self.model1_2 = model_dict['block1_2']
+                self.model2_2 = model_dict['block2_2']
+                self.model3_2 = model_dict['block3_2']
+                self.model4_2 = model_dict['block4_2']
+                self.model5_2 = model_dict['block5_2']
+                self.model6_2 = model_dict['block6_2']
 
             self._initialize_weights_norm()
+            self.is_train = is_train
 
-        def forward(self, x):
+        def hybrid_forward(self, F, x):
 
-            saved_for_loss = []
+
             out1 = self.model0(x)
 
             out1_1 = self.model1_1(out1)
             out1_2 = self.model1_2(out1)
-            out2 = torch.cat([out1_1, out1_2, out1], 1)
-            saved_for_loss.append(out1_1)
-            saved_for_loss.append(out1_2)
+            out2 = F.concat(out1_1, out1_2, out1, dim=1)
+
 
             out2_1 = self.model2_1(out2)
             out2_2 = self.model2_2(out2)
-            out3 = torch.cat([out2_1, out2_2, out1], 1)
-            saved_for_loss.append(out2_1)
-            saved_for_loss.append(out2_2)
+            out3 = F.concat(out2_1, out2_2, out1, dim=1)
 
             out3_1 = self.model3_1(out3)
             out3_2 = self.model3_2(out3)
-            out4 = torch.cat([out3_1, out3_2, out1], 1)
-            saved_for_loss.append(out3_1)
-            saved_for_loss.append(out3_2)
+            out4 = F.concat(out3_1, out3_2, out1, dim=1)
 
             out4_1 = self.model4_1(out4)
             out4_2 = self.model4_2(out4)
-            out5 = torch.cat([out4_1, out4_2, out1], 1)
-            saved_for_loss.append(out4_1)
-            saved_for_loss.append(out4_2)
+            out5 = F.concat(out4_1, out4_2, out1, dim=1)
 
             out5_1 = self.model5_1(out5)
             out5_2 = self.model5_2(out5)
-            out6 = torch.cat([out5_1, out5_2, out1], 1)
-            saved_for_loss.append(out5_1)
-            saved_for_loss.append(out5_2)
+            out6 = F.concat(out5_1, out5_2, out1, dim=1)
+
 
             out6_1 = self.model6_1(out6)
             out6_2 = self.model6_2(out6)
-            saved_for_loss.append(out6_1)
-            saved_for_loss.append(out6_2)
-
-            return (out6_1, out6_2), saved_for_loss
+            if self.is_train:
+                saved_for_loss = []
+                saved_for_loss.append(out1_1)
+                saved_for_loss.append(out1_2)
+                saved_for_loss.append(out2_1)
+                saved_for_loss.append(out2_2)
+                saved_for_loss.append(out3_1)
+                saved_for_loss.append(out3_2)
+                saved_for_loss.append(out4_1)
+                saved_for_loss.append(out4_2)
+                saved_for_loss.append(out5_1)
+                saved_for_loss.append(out5_2)
+                saved_for_loss.append(out6_1)
+                saved_for_loss.append(out6_2)
+                return (out6_1, out6_2), saved_for_loss
+            return (out6_1, out6_2)
 
         def _initialize_weights_norm(self):
+            
+            self.collect_params('block.*bias').initialize(mx.init.Zero())
+            self.collect_params('block.*weight').initialize(mx.init.Normal(0.01))
 
-            for m in self.modules():
-                if isinstance(m, nn.Conv2d):
-                    init.normal_(m.weight, std=0.01)
-                    if m.bias is not None:  # mobilenet conv2d doesn't add bias
-                        init.constant_(m.bias, 0.0)
-
-            # last layer of these block don't have Relu
-            init.normal_(self.model1_1[8].weight, std=0.01)
-            init.normal_(self.model1_2[8].weight, std=0.01)
-
-            init.normal_(self.model2_1[12].weight, std=0.01)
-            init.normal_(self.model3_1[12].weight, std=0.01)
-            init.normal_(self.model4_1[12].weight, std=0.01)
-            init.normal_(self.model5_1[12].weight, std=0.01)
-            init.normal_(self.model6_1[12].weight, std=0.01)
-
-            init.normal_(self.model2_2[12].weight, std=0.01)
-            init.normal_(self.model3_2[12].weight, std=0.01)
-            init.normal_(self.model4_2[12].weight, std=0.01)
-            init.normal_(self.model5_2[12].weight, std=0.01)
-            init.normal_(self.model6_2[12].weight, std=0.01)
-
-    model = rtpose_model(models)
+    model = RTPose(models, is_train=is_train)
     return model
-
-
-"""Load pretrained model on Imagenet
-:param model, the PyTorch nn.Module which will train.
-:param model_path, the directory which load the pretrained model, will download one if not have.
-:param trunk, the feature extractor network of model.               
-"""
-
-
-def use_vgg(model, model_path, trunk):
-    model_urls = {
-        'vgg16': 'https://download.pytorch.org/models/vgg16-397923af.pth',
-        'ssd': 'https://s3.amazonaws.com/amdegroot-models/vgg16_reducedfc.pth',
-        'vgg19': 'https://download.pytorch.org/models/vgg19-dcbb9e9d.pth'}
-
-    number_weight = {
-        'vgg16': 18,
-        'ssd': 18,
-        'vgg19': 20}
-
-    url = model_urls[trunk]
-
-    if trunk == 'ssd':
-        urllib.urlretrieve('https://s3.amazonaws.com/amdegroot-models/ssd300_mAP_77.43_v2.pth',
-                           os.path.join(model_path, 'ssd.pth'))
-        vgg_state_dict = torch.load(os.path.join(model_path, 'ssd.pth'))
-        print('loading SSD')
-    else:
-        vgg_state_dict = model_zoo.load_url(url, model_dir=model_path)
-    vgg_keys = vgg_state_dict.keys()
-
-    # load weights of vgg
-    weights_load = {}
-    # weight+bias,weight+bias.....(repeat 10 times)
-    for i in range(number_weight[trunk]):
-        weights_load[list(model.state_dict().keys())[i]
-                     ] = vgg_state_dict[list(vgg_keys)[i]]
-
-    state = model.state_dict()
-    state.update(weights_load)
-    model.load_state_dict(state)
-    print('load imagenet pretrained model: {}'.format(model_path))

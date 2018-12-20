@@ -4,6 +4,11 @@ data/*
 *.o
 *.so
 
+training/dataset
+logs
+model_checkpoints
+model_serving/files/*.params
+model_serving/*.mar
 .ipynb_checkpoints
 notebooks/*.pkl
 

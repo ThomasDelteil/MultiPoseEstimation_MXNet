@@ -7,9 +7,9 @@ try:
 except ImportError:
     import json
 
-from torchvision.transforms import ToTensor
+from mxnet.gluon.data.vision.transforms import ToTensor
 from training.datasets.coco_data.COCO_data_pipeline import Cocokeypoints
-from training.datasets.dataloader import sDataLoader
+from mxnet.gluon.data import DataLoader
 
 
 def get_loader(json_path, data_dir, mask_dir, inp_size, feat_stride, preprocess,
@@ -37,7 +37,7 @@ def get_loader(json_path, data_dir, mask_dir, inp_size, feat_stride, preprocess,
                               data=data, inp_size=inp_size, feat_stride=feat_stride,
                               preprocess=preprocess, transform=ToTensor(), params_transform=params_transform)
 
-    data_loader = sDataLoader(coco_data, batch_size=batch_size,
+    data_loader = DataLoader(coco_data, batch_size=batch_size,
                               shuffle=shuffle, num_workers=num_workers)
 
     return data_loader

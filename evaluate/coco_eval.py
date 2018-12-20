@@ -8,12 +8,14 @@ import pandas as pd
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-import torch
+import mxnet as mx
+from mxnet import nd, gluon
+from network.post import decode_pose
+from network import im_transform
 from training.datasets.coco_data.preprocessing import (inception_preprocess,
                                               rtpose_preprocess,
                                               ssd_preprocess, vgg_preprocess)
-from network.post import decode_pose
-from network import im_transform
+
 
 '''
 MS COCO annotation order:
@@ -92,7 +94,7 @@ def get_coco_val(file_path):
     return image_ids, file_paths, heights, widths
 
 
-def get_outputs(multiplier, img, model, preprocess):
+def get_outputs(multiplier, img, model, preprocess, ctx=mx.gpu(1)):
     """Computes the averaged heatmap and paf for the given image
     :param multiplier:
     :param origImg: numpy array, the image being processed
@@ -133,11 +135,14 @@ def get_outputs(multiplier, img, model, preprocess):
         batch_images[m, :, :im_data.shape[1], :im_data.shape[2]] = im_data
 
     # several scales as a batch
-    batch_var = torch.from_numpy(batch_images).cuda().float()
-    predicted_outputs, _ = model(batch_var)
-    output1, output2 = predicted_outputs[-2], predicted_outputs[-1]
-    heatmaps = output2.cpu().data.numpy().transpose(0, 2, 3, 1)
-    pafs = output1.cpu().data.numpy().transpose(0, 2, 3, 1)
+    batch_var = mx.nd.array(batch_images).as_in_context(ctx).astype('float32')
+    predicted_outputs = model(batch_var)
+    if isinstance(predicted_outputs[0], tuple) or isinstance(predicted_outputs[0], list):
+        output1, output2 = predicted_outputs[0]
+    else:
+        output1, output2 = predicted_outputs
+    heatmaps = output2.asnumpy().transpose(0, 2, 3, 1)
+    pafs = output1.asnumpy().transpose(0, 2, 3, 1)
 
     for m in range(len(multiplier)):
         scale = multiplier[m]
@@ -255,7 +260,7 @@ def handle_paf_and_heat(normal_heat, flipped_heat, normal_paf, flipped_paf):
     return averaged_paf, averaged_heatmap
 
         
-def run_eval(image_dir, anno_dir, vis_dir, image_list_txt, model, preprocess):
+def run_eval(image_dir, anno_dir, vis_dir, image_list_txt, model, preprocess, ctx=mx.gpu(0)):
     """Run the evaluation on the test set and report mAP score
     :param model: the model to test
     :returns: float, the reported mAP score
@@ -275,19 +280,19 @@ def run_eval(image_dir, anno_dir, vis_dir, image_list_txt, model, preprocess):
         if i % 10 == 0 and i != 0:
             print("Processed {} images".format(i))
 
-        oriImg = cv2.imread(os.path.join(image_dir, 'val2014/' + img_paths[i]))
+        oriImg = cv2.imread(os.path.join(image_dir, 'val2014', img_paths[i]))
         # Get the shortest side of the image (either height or width)
         shape_dst = np.min(oriImg.shape[0:2])
 
         # Get results of original image
         multiplier = get_multiplier(oriImg)
         orig_paf, orig_heat = get_outputs(
-            multiplier, oriImg, model,  preprocess)
+            multiplier, oriImg, model,  preprocess, ctx=ctx)
 
         # Get results of flipped image
         swapped_img = oriImg[:, ::-1, :]
         flipped_paf, flipped_heat = get_outputs(multiplier, swapped_img,
-                                                model, preprocess)
+                                                model, preprocess, ctx=ctx)
 
         # compute averaged heatmap and paf
         paf, heatmap = handle_paf_and_heat(

@@ -4,7 +4,8 @@ import os
 import cv2
 import numpy as np
 
-import torch
+import mxnet as mx
+
 from training.datasets.coco_data.heatmap import putGaussianMaps
 from training.datasets.coco_data.ImageAugmentation import (aug_croppad, aug_flip,
                                                   aug_rotate, aug_scale)
@@ -12,7 +13,7 @@ from training.datasets.coco_data.paf import putVecMaps
 from training.datasets.coco_data.preprocessing import (inception_preprocess,
                                               rtpose_preprocess,
                                               ssd_preprocess, vgg_preprocess)
-from torch.utils.data import DataLoader, Dataset
+from mxnet.gluon.data import DataLoader, Dataset
 
 '''
 train2014  : 82783 simages
@@ -225,11 +226,10 @@ class Cocokeypoints(Dataset):
 #        print img.shape
         if "COCO_val" in self.data[idx]['dataset']:
             mask_miss = cv2.imread(
-                self.mask_dir + 'mask2014/val2014_mask_miss_' + img_idx + 'png', 0)
+                self.mask_dir + '/val2014/mask_COCO_val2014_' + img_idx + 'jpg', 0)
         elif "COCO" in self.data[idx]['dataset']:
             mask_miss = cv2.imread(
-                self.mask_dir + 'mask2014/train2014_mask_miss_' + img_idx + 'png', 0)
-#        print self.root + 'mask2014/val2014_mask_miss_' + img_idx + 'png'
+                self.mask_dir + '/train2014/mask_COCO_train2014_' + img_idx + 'jpg', 0)
         meta_data = self.get_anno(self.data[idx])
 
         meta_data = self.add_neck(meta_data)
@@ -259,19 +259,14 @@ class Cocokeypoints(Dataset):
         elif self.preprocess == 'vgg':
             img = vgg_preprocess(img)
 
-        elif self.preprocess == 'inception':
-            img = inception_preprocess(img)
 
-        elif self.preprocess == 'ssd':
-            img = ssd_preprocess(img)
-
-        img = torch.from_numpy(img)
-        heatmaps = torch.from_numpy(
+        img = mx.nd.array(img)
+        heatmaps = mx.nd.array(
             heatmaps.transpose((2, 0, 1)).astype(np.float32))
-        heat_mask = torch.from_numpy(
+        heat_mask = mx.nd.array(
             heat_mask.transpose((2, 0, 1)).astype(np.float32))
-        pafs = torch.from_numpy(pafs.transpose((2, 0, 1)).astype(np.float32))
-        paf_mask = torch.from_numpy(
+        pafs = mx.nd.array(pafs.transpose((2, 0, 1)).astype(np.float32))
+        paf_mask = mx.nd.array(
             paf_mask.transpose((2, 0, 1)).astype(np.float32))
 
         return img, heatmaps, heat_mask, pafs, paf_mask
