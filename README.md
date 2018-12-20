@@ -16,9 +16,10 @@ Code repo for reproducing 2017 CVPR Oral paper using MXNet.
 
 ### Pretrained Models & Performance on the dataset split by the original rtpose.
 
-|   Reported on paper (VGG19)| mAP in this repo (VGG19)| Trained from scratch in this repo| 
+|   Reported on paper (VGG19)| mAP in this repo (VGG19)| Trained from scratch in the original repo| 
 |  :------:     | :---------: | :---------: |
 |   0.577      | 0.598     |  **0.614** |
+
 
 
 ## Training
@@ -31,6 +32,7 @@ then run:
 
 `python train_VGG19.py --gpu_ids 0 --lr=1 --wd=0.00001 --momentum=0.9 --log_key="lr_1_wd_0.0001_momentum_0.9"`
 
+<img width="356" alt="screen shot 2018-12-20 at 4 51 40 pm" src="https://user-images.githubusercontent.com/3716307/50296004-b8d48480-0479-11e9-8197-57b4c5ce123b.png">
 
 ## Related repository
 - CVPR'16, [Convolutional Pose Machines](https://github.com/shihenw/convolutional-pose-machines-release).
