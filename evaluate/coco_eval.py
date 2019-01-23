@@ -120,17 +120,7 @@ def get_outputs(multiplier, img, model, preprocess, ctx=mx.gpu(1)):
         im_croped, im_scale, real_shape = im_transform.crop_with_factor(
             img, inp_size, factor=8, is_ceil=True)
 
-        if preprocess == 'rtpose':
-            im_data = rtpose_preprocess(im_croped)
-
-        elif preprocess == 'vgg':
-            im_data = vgg_preprocess(im_croped)
-
-        elif preprocess == 'inception':
-            im_data = inception_preprocess(im_croped)
-
-        elif preprocess == 'ssd':
-            im_data = ssd_preprocess(im_croped)
+        im_data = vgg_preprocess(im_croped)
 
         batch_images[m, :, :im_data.shape[1], :im_data.shape[2]] = im_data
 

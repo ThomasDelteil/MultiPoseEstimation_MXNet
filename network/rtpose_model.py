@@ -16,9 +16,13 @@ def make_stage(prefix, blocks):
                                             padding=v[2]))
                 else:
                     activation = "relu" if i < len(blocks) - 1 else None
+                    if i > 0:
+                        stage.add(nn.BatchNorm())
+                        stage.add(nn.Dropout(rate=0.2))
                     stage.add(nn.Conv2D(prefix=k, channels=v[1],
                                        kernel_size=v[2], strides=v[3],
                                        padding=v[4], activation=activation))
+
     return stage
 
 def make_vgg19_block():
@@ -34,6 +38,19 @@ def make_vgg19_block():
     vgg19_block[-2:].initialize(mx.init.Normal(0.01))
     return vgg19_block
 
+def make_mobilenet_block():
+    """Builds the vgg19 using pre-trained data
+    """
+    mobilenet_block = nn.HybridSequential(prefix='mobilenet')
+    mobilenet = gluon.model_zoo.vision.mobilenet_v2_0_5(pretrained=True)
+    with mobilenet_block.name_scope():
+        for i in range(9):
+                mobilenet_block.add(mobilenet.features[i])
+        #mobilenet_block.add(nn.Conv2D(prefix='conv4_3_CPM', channels=256, kernel_size=1, padding=1))
+        #mobilenet_block.add(nn.Conv2D(prefix='conv4_4_CPM', channels=128, kernel_size=1, padding=1))
+    #mobilenet_block[-1:].initialize(mx.init.Normal(0.01))
+    return mobilenet_block
+
 def get_model(trunk='vgg19', is_train=True):
     """Creates the whole CPM model
     Args:
@@ -41,16 +58,6 @@ def get_model(trunk='vgg19', is_train=True):
     Returns: Module, the defined model
     """
     blocks = {}
-    # block0 is the preprocessing stage
-
-    if trunk == 'mobilenet':
-        block0 = [{'conv_bn': [3, 32, 2]},  # out: 3, 32, 184, 184
-                  {'conv_dw1': [32, 64, 1]},  # out: 32, 64, 184, 184
-                  {'conv_dw2': [64, 128, 2]},  # out: 64, 128, 92, 92
-                  {'conv_dw3': [128, 128, 1]},  # out: 128, 256, 92, 92
-                  {'conv_dw4': [128, 256, 2]},  # out: 256, 256, 46, 46
-                  {'conv4_3_CPM': [256, 256, 1, 3, 1]},
-                  {'conv4_4_CPM': [256, 128, 1, 3, 1]}]
 
     # Stage 1
     blocks['block1_1'] = [{'conv5_1_CPM_L1': [128, 128, 3, 1, 1]},
@@ -91,6 +98,8 @@ def get_model(trunk='vgg19', is_train=True):
 
     if trunk == 'vgg19':
         models['block0'] = make_vgg19_block()
+    elif trunk == 'mobilenet':
+        models['block0'] = make_mobilenet_block()
 
 
     for k, v in blocks.items():
@@ -168,6 +177,7 @@ def get_model(trunk='vgg19', is_train=True):
             
             self.collect_params('block.*bias').initialize(mx.init.Zero())
             self.collect_params('block.*weight').initialize(mx.init.Normal(0.01))
+            self.collect_params('block.*batchnorm.*').initialize(mx.init.Zero())
 
     model = RTPose(models, is_train=is_train)
     return model

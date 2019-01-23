@@ -29,7 +29,7 @@ Code repo for reproducing 2017 CVPR Oral paper using MXNet.
 then run:
 
 
-`python train_VGG19.py --gpu_ids 0 --lr=1 --wd=0.00001 --momentum=0.9 --log_key="lr_1_wd_0.0001_momentum_0.9"`
+`python train_model.py --gpu_ids 0 --lr=1 --wd=0.00001 --momentum=0.9 --log_key="lr_1_wd_0.0001_momentum_0.9"`
 
 
 ## Related repository

@@ -1,5 +1,5 @@
 from evaluate.coco_eval import run_eval
-from network.rtpose_vgg import get_model
+from network.rtpose_model import get_model
 import mxnet as mx
 
 def evaluate(ctx = mx.gpu(3), weight_path='./model_checkpoints/vgg_pose_ft_6.params'):

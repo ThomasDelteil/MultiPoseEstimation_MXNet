@@ -18,16 +18,23 @@ class PoseEstimationService(object):
         self.initialized = False
 
     def initialize(self, params):
-        symbol_file = 'inference_model-heatmap-symbol.json'
-        param_file = 'inference_model-0000.params'
+        symbol_file = 'export_mobilenet_heatmap-symbol.json'
+        param_file = 'export_mobilenet_heatmap-0000.params'
 
         gpu_id = params.system_properties.get("gpu_id")
         model_dir = params.system_properties.get("model_dir")
         param_file_path = os.path.join(model_dir, param_file)
         symbol_file_path = os.path.join(model_dir, symbol_file)
         
-        self.resize = mx.gluon.data.vision.transforms.Resize(SIZE, True)
-        self.crop = mx.gluon.data.vision.transforms.CenterCrop(SIZE, cv2.INTER_CUBIC)
+
+        self.transform = mx.gluon.data.vision.transforms.Compose(
+            [
+                mx.gluon.data.vision.transforms.Resize(SIZE, True),
+                mx.gluon.data.vision.transforms.CenterCrop(SIZE, cv2.INTER_CUBIC),
+                mx.gluon.data.vision.transforms.ToTensor(),
+                mx.gluon.data.vision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ]
+        )
         
         if not os.path.isfile(param_file_path):
             raise OSError("Parameter file not found {}".format(param_file_path))
@@ -52,8 +59,9 @@ class PoseEstimationService(object):
         """
         img = data[0].get("body")
         img = mx.image.imdecode(img, 1, True)
-        img = self.crop(self.resize(img))
-        data = img.as_in_context(self.ctx).transpose((2,0,1)).astype('float32').expand_dims(axis=0)
+        img = self.transform(img)
+        data = img.as_in_context(self.ctx).expand_dims(axis=0)
+        
         return data
 
     def inference(self, data):

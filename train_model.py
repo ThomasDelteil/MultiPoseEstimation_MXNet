@@ -8,7 +8,7 @@ import mxnet as mx
 from mxnet import gluon, autograd, nd
 from mxnet.gluon import nn, loss
 
-from network.rtpose_vgg import get_model
+from network.rtpose_model import get_model
 from training.datasets.coco import get_loader
 from mxboard import SummaryWriter    
 
@@ -28,9 +28,12 @@ parser.add_argument('--load_model', default='', type=str,
                     help='which model to load') 
 parser.add_argument('--log_key', default='new_experiment', type=str,
                     help='Which key to use for mxboard') 
+parser.add_argument('--trunk', default='mobilenet', type=str,
+                    help='Which backend to use [mobilenet, vgg19]') 
+parser.add_argument('--dtype', default='float32', type=str,
+                    help='Which precision to use') 
 parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                     metavar='LR', help='initial learning rate')
-
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
  
@@ -70,6 +73,8 @@ gpuIDs = args.gpu_ids
 batch_size = args.batch_size
 print_freq = args.print_freq
 log_key = args.log_key
+model_trunk = args.trunk
+dtype = args.dtype
 
 ctx = [mx.gpu(e) for e in args.gpu_ids] if args.gpu_ids[0] != -1 else [mx.cpu()]
 ctx = ctx[0] # single GPU for now
@@ -123,17 +128,20 @@ def get_loss(saved_for_loss, heat_temp, heat_weight,
 
     names = build_names()
     saved_for_log = OrderedDict()
-    loss_fn = gluon.loss.L2Loss()
     total_loss = 0
-
-    for j in range(6):
-        pred1 = saved_for_loss[2 * j] * vec_weight
+    loss_fn2 = gluon.loss.L2Loss()
+    loss_fn1 = gluon.loss.L1Loss()
+    for j in range(len(saved_for_loss)//2):
+        pred1 = saved_for_loss[2 * j] * vec_weight 
         gt1 = vec_temp * vec_weight
-        pred2 = saved_for_loss[2 * j + 1] * heat_weight
+        pred2 = saved_for_loss[2 * j + 1] * heat_weight 
         gt2 = heat_weight * heat_temp
         # Compute losses
-        loss1 = loss_fn(pred1, gt1)
-        loss2 = loss_fn(pred2, gt2) 
+        loss1 = loss_fn2(pred1, gt1)
+        loss2 = loss_fn2(pred2, gt2)
+        #loss1 = 0.5*loss_fn1(pred1, gt1)+0.5*loss_fn2(pred1, gt1)
+        #loss2 = 0.5*loss_fn1(pred2, gt2)+0.5*loss_fn2(pred2, gt2)
+
         total_loss = total_loss + loss1
         total_loss = total_loss + loss2
         saved_for_log[names[2 * j]] = loss1.mean().asscalar()
@@ -145,11 +153,12 @@ def get_loss(saved_for_loss, heat_temp, heat_weight,
     saved_for_log['min_paf'] = saved_for_loss[-2].asnumpy().min()
 
     return total_loss, saved_for_log
+    return total_loss, saved_for_log
          
-def run_epoch(iterator, model, epoch, is_train=True, trainer_vgg=None, trainer_pose=None):
+def run_epoch(iterator, model, epoch, is_train=True, trainer_trunk=None, trainer_pose=None, dtype='float32'):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    
+    model.cast(dtype)
     meter_dict = {}
     for name in build_names():
         meter_dict[name] = AverageMeter()
@@ -161,41 +170,41 @@ def run_epoch(iterator, model, epoch, is_train=True, trainer_vgg=None, trainer_p
     end = time.time()
     
     for i, (img, heatmap_target, heat_mask, paf_target, paf_mask) in enumerate(iterator):
-        img = img.as_in_context(ctx)
-        heatmap_target = heatmap_target.as_in_context(ctx)
-        heat_mask = heat_mask.as_in_context(ctx)
-        paf_target = paf_target.as_in_context(ctx)
-        paf_mask = paf_mask.as_in_context(ctx)
+        img = img.as_in_context(ctx).astype(dtype, copy=False)
+        heatmap_target = heatmap_target.as_in_context(ctx).astype(dtype, copy=False)
+        heat_mask = heat_mask.as_in_context(ctx).astype(dtype, copy=False)
+        paf_target = paf_target.as_in_context(ctx).astype(dtype, copy=False)
+        paf_mask = paf_mask.as_in_context(ctx).astype(dtype, copy=False)
                 
         with autograd.record(is_train):
             # compute output
             _,saved_for_loss = model(img)
-
             total_loss, saved_for_log = get_loss(saved_for_loss, heatmap_target, heat_mask,
                    paf_target, paf_mask)
-
-            for name,_ in meter_dict.items():
-                meter_dict[name].update(saved_for_log[name], img.shape[0])
-            losses.update(total_loss.mean().asscalar(), img.shape[0])
+        
+        for name,_ in meter_dict.items():
+            meter_dict[name].update(saved_for_log[name], img.shape[0])
+        losses.update(total_loss.astype('float32').mean().asscalar(), img.shape[0])
 
         if is_train:
             total_loss.backward()
-            trainer_vgg.step(img.shape[0])
+            if trainer_trunk is not None:
+                trainer_trunk.step(img.shape[0])
             trainer_pose.step(img.shape[0])
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
         if i % print_freq == 0 and is_train:
-#            print('Epoch: [{0}][{1}/{2}]\t'.format(epoch, i, len(iterator)))
-#            print('Data time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'.format( batch_time=batch_time))
-             print('Loss {loss.val:.4f} ({loss.avg:.4f})'.format(loss=losses))
-             writer.add_scalar('data/max_ht', {log_key:meter_dict['max_ht'].avg}, i+epoch*len(iterator))
-             writer.add_scalar('data/max_paf', {log_key:meter_dict['max_paf'].avg}, i+epoch*len(iterator))
-             writer.add_scalar('data/loss', {log_key:losses.avg}, i+epoch*len(iterator)),
-#            for name, value in meter_dict.items():
-#                print('{name}: {loss.val:.4f} ({loss.avg:.4f})\t'.format(name=name, loss=value))
-             writer.flush()
+            print('Epoch: [{0}][{1}/{2}]\t'.format(epoch, i, len(iterator)))
+            print('Data time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'.format( batch_time=batch_time))
+            print('Loss {loss.val:.4f} ({loss.avg:.4f})'.format(loss=losses))
+            writer.add_scalar('data/max_ht', {log_key:meter_dict['max_ht'].avg}, i+epoch*len(iterator))
+            writer.add_scalar('data/max_paf', {log_key:meter_dict['max_paf'].avg}, i+epoch*len(iterator))
+            writer.add_scalar('data/loss', {log_key:losses.avg}, i+epoch*len(iterator)),
+            for name, value in meter_dict.items():
+                print('{name}: {loss.val:.4f} ({loss.avg:.4f})\t'.format(name=name, loss=value))
+            writer.flush()
     return losses.avg
     
 
@@ -214,22 +223,21 @@ valid_data = get_loader(json_path, data_dir, mask_dir, 368,
 print('val dataset len: {}'.format(len(valid_data._dataset)))
 
 # model
-
-model = get_model(trunk='vgg19')
+model = get_model(trunk=model_trunk)
 model.collect_params().reset_ctx(ctx)
 if load_model != '':
     model.load_parameters(os.path.join(model_path, load_model))
 model.hybridize()
 
-# Fix the VGG pre-trained weights for now
-trainer_vgg = gluon.Trainer(model.model0.collect_params('.*CPM.*'), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd})
+# Fix the  pre-trained weights for now
+trainer_trunk = gluon.Trainer(model.model0.collect_params('.*CPM.*'), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd}) if model_trunk == 'vgg19' else None 
 trainer_pose = gluon.Trainer(model.collect_params('block.*'), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd}) 
                                                                                           
-writer = SummaryWriter(logdir=logdir)       
+    
 for epoch in range(epochs_pre):
     # train for one epoch
-    train_loss = run_epoch(train_data, model, epoch, is_train=True, trainer_vgg=trainer_vgg, trainer_pose=trainer_pose)
-    model.save_parameters(os.path.join(model_path, log_key+'_vgg_pose_'+str(epoch)+'.params'))
+    train_loss = run_epoch(train_data, model, epoch, is_train=True, trainer_trunk=trainer_trunk, trainer_pose=trainer_pose)
+    model.save_parameters(os.path.join(model_path, log_key+'_'+model_trunk+'_pose_'+str(epoch)+'.params'))
     # evaluate on validation set
     val_loss = run_epoch(valid_data, model, epoch, is_train=False)  
                   
@@ -237,24 +245,22 @@ for epoch in range(epochs_pre):
     writer.add_scalar('epoch/val_loss', {log_key: val_loss}, epoch)       
     
 if optim == 'sgd':
-    trainer_vgg = gluon.Trainer(model.model0.collect_params(), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd})
-    trainer_pose = gluon.Trainer(model.collect_params('block.*'), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd}) 
+    trainer_trunk = gluon.Trainer(model.model0.collect_params(), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd, 'multi_precision':(dtype=='float16')})
+    trainer_pose = gluon.Trainer(model.collect_params('block.*'), 'sgd', {'learning_rate':lr, 'momentum': momentum, 'wd':wd, 'multi_precision':(dtype=='float16')})
 elif optim == 'adam':
-    trainer_vgg = gluon.Trainer(model.model0.collect_params(), 'adam', {'learning_rate':lr, 'wd':wd})
-    trainer_pose = gluon.Trainer(model.collect_params('block.*'), 'adam', {'learning_rate':lr, 'wd':wd}) 
+    trainer_trunk = gluon.Trainer(model.model0.collect_params(), 'adam', {'learning_rate':lr, 'wd':wd, 'multi_precision':(dtype=='float16')})
+    trainer_pose = gluon.Trainer(model.collect_params('block.*'), 'adam', {'learning_rate':lr, 'wd':wd, 'multi_precision':(dtype=='float16')})
 else:
     raise "Unknown optim " + optim
 log_key += '_ft'        
 
 for epoch in range(epochs_pre, epochs_pre+epochs_ft):
     # train for one epoch
-    train_loss = run_epoch(train_data, model, epoch, is_train=True, trainer_vgg=trainer_vgg, trainer_pose=trainer_pose)
-    model.save_parameters(os.path.join(model_path, log_key+'_vgg_pose_'+str(epoch)+'.params'))
+    train_loss = run_epoch(train_data, model, epoch, is_train=True, trainer_trunk=trainer_trunk, trainer_pose=trainer_pose, dtype=dtype)
+    model.save_parameters(os.path.join(model_path, log_key+'_'+model_trunk+'_pose_ft_'+str(epoch)+'_'+dtype+'.params'))
     # evaluate on validation set
     val_loss = run_epoch(valid_data, model, epoch, is_train=False)  
                                  
     writer.add_scalar('epoch_ft/train_loss', {log_key: train_loss}, epoch)
-    writer.add_scalar('epoch_ft/val_loss', {log_key: val_loss}, epoch)                                                                
-
-        
+    writer.add_scalar('epoch_ft/val_loss', {log_key: val_loss}, epoch)                                                 
 writer.close()    
