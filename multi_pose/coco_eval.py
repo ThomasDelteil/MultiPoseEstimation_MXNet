@@ -114,7 +114,9 @@ def get_outputs(multiplier, img, model, ctx=mx.gpu(1), downsampling=8, num_joint
         # padding
         im_cropped, im_scale, real_shape = im_transform.crop_with_factor(img, inp_size, factor=downsampling, is_ceil=True)
         im_data = preprocess(im_cropped)
-        batch_images[m, :, :im_data.shape[1], :im_data.shape[2]] = im_data
+        h = min(im_data.shape[1], max_cropped.shape[0])
+        w = min(im_data.shape[2], max_cropped.shape[1])
+        batch_images[m, :, :h, :w] = im_data[:, :h, :w]
 
     # several scales as a batch
     batch_var = mx.nd.array(batch_images).as_in_context(ctx).astype('float32')
@@ -185,7 +187,7 @@ def append_result(image_id, person_to_joint_assoc, joint_list, outputs):
 
         one_result["score"] = person_to_joint_assoc[ridxPred, -2] * \
             person_to_joint_assoc[ridxPred, -1]
-        one_result["keypoints"] = list(keypoints.reshape(51))
+        one_result["keypoints"] = list(keypoints.reshape(3*len(ORDER_COCO)))
 
         outputs.append(one_result)
 
