@@ -1,19 +1,20 @@
 # coding=utf-8
 import os
+try:
+    import ujson as json
+except ImportError:
+    import json
 
 import cv2
+from mxnet.gluon.data import DataLoader, Dataset
+from mxnet.gluon.data.vision.transforms import ToTensor
+import mxnet as mx
 import numpy as np
 
-import mxnet as mx
+from multi_pose.datasets.image_augmentation import (aug_croppad, aug_flip, aug_rotate, aug_scale)
+from multi_pose.datasets.heatmap import putGaussianMaps
+from multi_pose.datasets.paf import putVecMaps
 
-from training.datasets.coco_data.heatmap import putGaussianMaps
-from training.datasets.coco_data.ImageAugmentation import (aug_croppad, aug_flip,
-                                                  aug_rotate, aug_scale)
-from training.datasets.coco_data.paf import putVecMaps
-from training.datasets.coco_data.preprocessing import (inception_preprocess,
-                                              rtpose_preprocess,
-                                              ssd_preprocess, vgg_preprocess)
-from mxnet.gluon.data import DataLoader, Dataset
 
 '''
 train2014  : 82783 simages
@@ -23,8 +24,52 @@ first 2644 of val2014 marked by 'isValidation = 1', as our minval dataset.
 So all training data have 82783+40504-2644 = 120643 samples
 '''
 
+
+def get_loader(json_path, data_dir, mask_dir, inp_size, feat_stride, batch_size, params_transform, training=True, shuffle=True, num_workers=3):
+    """ Build a COCO dataloader
+    :param json_path: string, path to jso file
+    :param datadir: string, path to coco data
+    :returns : the data_loader
+    """
+    with open(json_path) as data_file:
+        data_this = json.load(data_file)
+        data = data_this['root']
+
+    num_samples = len(data)
+    train_indexes = []
+    val_indexes = []
+    for count in range(num_samples):
+        if data[count]['isValidation'] != 0.:
+            val_indexes.append(count)
+        else:
+            train_indexes.append(count)
+
+    coco_data = Cocokeypoints(root=data_dir, mask_dir=mask_dir,
+                              index_list=train_indexes if training else val_indexes,
+                              data=data, inp_size=inp_size, feat_stride=feat_stride,
+                              transform=ToTensor(), params_transform=params_transform)
+
+    data_loader = DataLoader(coco_data, batch_size=batch_size,
+                              shuffle=shuffle, num_workers=num_workers)
+
+    return data_loader
+
+
+def preprocess(image):
+    image = image.astype(np.float32) / 255.
+    means = [0.485, 0.456, 0.406]
+    stds = [0.229, 0.224, 0.225]
+
+    preprocessed_img = image.copy()[:, :, ::-1]
+    for i in range(3):
+        preprocessed_img[:, :, i] = preprocessed_img[:, :, i] - means[i]
+        preprocessed_img[:, :, i] = preprocessed_img[:, :, i] / stds[i]
+
+    preprocessed_img = preprocessed_img.transpose((2, 0, 1)).astype(np.float32)
+    return preprocessed_img
+
 class Cocokeypoints(Dataset):
-    def __init__(self, root, mask_dir, index_list, data, inp_size, feat_stride, preprocess='rtpose', transform=None,
+    def __init__(self, root, mask_dir, index_list, data, inp_size, feat_stride, transform=None,
                  target_transform=None, params_transform=None):
 
         self.params_transform = params_transform
@@ -33,7 +78,6 @@ class Cocokeypoints(Dataset):
         self.params_transform['stride'] = feat_stride
 
         # add preprocessing as a choice, so we don't modify it manually.
-        self.preprocess = preprocess
         self.data = data
         self.mask_dir = mask_dir
         self.numSample = len(index_list)
@@ -223,7 +267,6 @@ class Cocokeypoints(Dataset):
         idx = self.index_list[index]
         img = cv2.imread(os.path.join(self.root, self.data[idx]['img_paths']))
         img_idx = self.data[idx]['img_paths'][-16:-3]
-#        print img.shape
         if "COCO_val" in self.data[idx]['dataset']:
             mask_miss = cv2.imread(
                 self.mask_dir + '/val2014/mask_COCO_val2014_' + img_idx + 'jpg', 0)
@@ -251,14 +294,7 @@ class Cocokeypoints(Dataset):
         heat_mask, heatmaps, paf_mask, pafs = self.get_ground_truth(
             meta_data, mask_miss)
 
-        # image preprocessing, which comply the model
-        # trianed on Imagenet dataset
-        if self.preprocess == 'rtpose':
-            img = rtpose_preprocess(img)
-
-        elif self.preprocess == 'vgg':
-            img = vgg_preprocess(img)
-
+        img = preprocess(img)
 
         img = mx.nd.array(img)
         heatmaps = mx.nd.array(

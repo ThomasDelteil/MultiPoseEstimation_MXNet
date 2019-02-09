@@ -1,4 +1,5 @@
 import os
+import random
 import time
 
 import cv2
@@ -10,11 +11,11 @@ from pycocotools.cocoeval import COCOeval
 
 import mxnet as mx
 from mxnet import nd, gluon
-from network.post import decode_pose
-from network import im_transform
-from training.datasets.coco_data.preprocessing import (inception_preprocess,
-                                              rtpose_preprocess,
-                                              ssd_preprocess, vgg_preprocess)
+from tqdm import tqdm
+
+from multi_pose.post_processing import decode_pose
+import multi_pose.im_transform as im_transform
+from multi_pose.datasets.coco_data import preprocess
 
 
 '''
@@ -34,11 +35,9 @@ The order in this work:
 
 ORDER_COCO = [0, 15, 14, 17, 16, 5, 2, 6, 3, 7, 4, 11, 8, 12, 9, 13, 10]
 
-MID_1 = [1, 8,  9, 1,  11, 12, 1, 2, 3,
-         2,  1, 5, 6, 5,  1, 0,  0,  14, 15]
+MID_1 = [1, 8,  9, 1,  11, 12, 1, 2, 3, 2,  1, 5, 6, 5,  1, 0,  0,  14, 15]
 
-MID_2 = [8, 9, 10, 11, 12, 13, 2, 3, 4,
-         16, 5, 6, 7, 17, 0, 14, 15, 16, 17]
+MID_2 = [8, 9, 10, 11, 12, 13, 2, 3, 4, 16, 5, 6, 7, 17, 0, 14, 15, 16, 17]
 
 
 def eval_coco(outputs, dataDir, imgIds):
@@ -70,13 +69,13 @@ def eval_coco(outputs, dataDir, imgIds):
     return cocoEval.stats[0]
 
 
-def get_multiplier(img):
+def get_multiplier(img, input_size=384):
     """Computes the sizes of image at different scales
     :param img: numpy array, the current image
     :returns : list of float. The computed scales
     """
-    scale_search = [0.5, 1., 1.5, 2, 2.5]
-    return [x * 368. / float(img.shape[0]) for x in scale_search]
+    scale_search = [0.5, 1.0, 1.5, 2.0, 2.5]
+    return [x * input_size / float(np.min(img.shape[:2])) for x in scale_search]
 
 
 def get_coco_val(file_path):
@@ -94,7 +93,7 @@ def get_coco_val(file_path):
     return image_ids, file_paths, heights, widths
 
 
-def get_outputs(multiplier, img, model, preprocess, ctx=mx.gpu(1)):
+def get_outputs(multiplier, img, model, ctx=mx.gpu(1), downsampling=8, num_joints=19):
     """Computes the averaged heatmap and paf for the given image
     :param multiplier:
     :param origImg: numpy array, the image being processed
@@ -102,26 +101,19 @@ def get_outputs(multiplier, img, model, preprocess, ctx=mx.gpu(1)):
     :returns: numpy arrays, the averaged paf and heatmap
     """
 
-    heatmap_avg = np.zeros((img.shape[0], img.shape[1], 19))
-    paf_avg = np.zeros((img.shape[0], img.shape[1], 38))
+    heatmap_avg = np.zeros((img.shape[0], img.shape[1], num_joints))
+    paf_avg = np.zeros((img.shape[0], img.shape[1], num_joints*2))
     max_scale = multiplier[-1]
-    max_size = max_scale * img.shape[0]
+    max_size = int(max_scale * np.min(img.shape[:2]))
     # padding
-    max_cropped, _, _ = im_transform.crop_with_factor(
-        img, max_size, factor=8, is_ceil=True)
-    batch_images = np.zeros(
-        (len(multiplier), 3, max_cropped.shape[0], max_cropped.shape[1]))
-
+    max_cropped, _, _ = im_transform.crop_with_factor(img, max_size, factor=downsampling, is_ceil=True)
+    batch_images = np.zeros((len(multiplier), 3, max_cropped.shape[0], max_cropped.shape[1]))
     for m in range(len(multiplier)):
         scale = multiplier[m]
-        inp_size = scale * img.shape[0]
-
+        inp_size = scale * np.min(img.shape[:2])
         # padding
-        im_croped, im_scale, real_shape = im_transform.crop_with_factor(
-            img, inp_size, factor=8, is_ceil=True)
-
-        im_data = vgg_preprocess(im_croped)
-
+        im_cropped, im_scale, real_shape = im_transform.crop_with_factor(img, inp_size, factor=downsampling, is_ceil=True)
+        im_data = preprocess(im_cropped)
         batch_images[m, :, :im_data.shape[1], :im_data.shape[2]] = im_data
 
     # several scales as a batch
@@ -136,21 +128,17 @@ def get_outputs(multiplier, img, model, preprocess, ctx=mx.gpu(1)):
 
     for m in range(len(multiplier)):
         scale = multiplier[m]
-        inp_size = scale * img.shape[0]
+        inp_size = scale * np.min(img.shape[:2])
 
         # padding
-        im_cropped, im_scale, real_shape = im_transform.crop_with_factor(
-            img, inp_size, factor=8, is_ceil=True)
-        heatmap = heatmaps[m, :int(im_cropped.shape[0] /
-                           8), :int(im_cropped.shape[1] / 8), :]
-        heatmap = cv2.resize(heatmap, None, fx=8, fy=8,
-                             interpolation=cv2.INTER_CUBIC)
+        im_cropped, im_scale, real_shape = im_transform.crop_with_factor(img, inp_size, factor=downsampling, is_ceil=True)
+        heatmap = heatmaps[m, :int(im_cropped.shape[0]/downsampling), :int(im_cropped.shape[1] / downsampling), :]
+        heatmap = cv2.resize(heatmap, None, fx=downsampling, fy=downsampling, interpolation=cv2.INTER_CUBIC)
         heatmap = heatmap[0:real_shape[0], 0:real_shape[1], :]
-        heatmap = cv2.resize(
-            heatmap, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_CUBIC)
+        heatmap = cv2.resize( heatmap, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_CUBIC)
 
-        paf = pafs[m, :int(im_cropped.shape[0] / 8), :int(im_cropped.shape[1] / 8), :]
-        paf = cv2.resize(paf, None, fx=8, fy=8, interpolation=cv2.INTER_CUBIC)
+        paf = pafs[m, :int(im_cropped.shape[0]/downsampling), :int(im_cropped.shape[1]/downsampling), :]
+        paf = cv2.resize(paf, None, fx=downsampling, fy=downsampling, interpolation=cv2.INTER_CUBIC)
         paf = paf[0:real_shape[0], 0:real_shape[1], :]
         paf = cv2.resize(
             paf, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_CUBIC)
@@ -179,9 +167,9 @@ def append_result(image_id, person_to_joint_assoc, joint_list, outputs):
         }
 
         one_result["image_id"] = image_id
-        keypoints = np.zeros((17, 3))
+        keypoints = np.zeros((len(ORDER_COCO), 3))
 
-        for part in range(17):
+        for part in range(len(ORDER_COCO)):
             ind = ORDER_COCO[part]
             index = int(person_to_joint_assoc[ridxPred, ind])
 
@@ -250,7 +238,7 @@ def handle_paf_and_heat(normal_heat, flipped_heat, normal_paf, flipped_paf):
     return averaged_paf, averaged_heatmap
 
         
-def run_eval(image_dir, anno_dir, vis_dir, image_list_txt, model, preprocess, ctx=mx.gpu(0)):
+def run_eval(image_dir, anno_dir, vis_dir, image_list_txt, model, ctx=mx.gpu(0), downsampling=8, input_size=384, num_joints=19):
     """Run the evaluation on the test set and report mAP score
     :param model: the model to test
     :returns: float, the reported mAP score
@@ -259,48 +247,34 @@ def run_eval(image_dir, anno_dir, vis_dir, image_list_txt, model, preprocess, ct
     # https://github.com/CMU-Perceptual-Computing-Lab/caffe_rtpose/blob/master
     img_ids, img_paths, img_heights, img_widths = get_coco_val(
         image_list_txt)
-    # img_ids = img_ids[81:82]
-    # img_paths = img_paths[81:82]
     print("Total number of validation images {}".format(len(img_ids)))
 
     # iterate all val images
     outputs = []
     print("Processing Images in validation set")
-    for i in range(len(img_ids)):
+    for i in tqdm(range(len(img_ids))):
         if i % 10 == 0 and i != 0:
             print("Processed {} images".format(i))
 
         oriImg = cv2.imread(os.path.join(image_dir, 'val2014', img_paths[i]))
-        # Get the shortest side of the image (either height or width)
-        shape_dst = np.min(oriImg.shape[0:2])
 
         # Get results of original image
-        multiplier = get_multiplier(oriImg)
-        orig_paf, orig_heat = get_outputs(
-            multiplier, oriImg, model,  preprocess, ctx=ctx)
+        multiplier = get_multiplier(oriImg, input_size)
+        orig_paf, orig_heat = get_outputs(multiplier, oriImg, model,  downsampling=downsampling, ctx=ctx, num_joints=num_joints)
 
         # Get results of flipped image
         swapped_img = oriImg[:, ::-1, :]
-        flipped_paf, flipped_heat = get_outputs(multiplier, swapped_img,
-                                                model, preprocess, ctx=ctx)
+        flipped_paf, flipped_heat = get_outputs(multiplier, swapped_img, model, downsampling=downsampling, ctx=ctx, num_joints=num_joints)
 
         # compute averaged heatmap and paf
-        paf, heatmap = handle_paf_and_heat(
-            orig_heat, flipped_heat, orig_paf, flipped_paf)
+        paf, heatmap = handle_paf_and_heat(orig_heat, flipped_heat, orig_paf, flipped_paf)
 
-        # choose which post-processing to use, our_post_processing
-        # got slightly higher AP but is slow.
-        param = {'thre1': 0.1, 'thre2': 0.05, 'thre3': 0.5}
-        canvas, to_plot, candidate, subset = decode_pose(
-            oriImg, param, heatmap, paf)
+        canvas, to_plot, candidate, subset = decode_pose(oriImg, heatmap, paf,  threshold_path_min_val=0.05, minimum_activation=0.07)
             
         vis_path = os.path.join(vis_dir, img_paths[i])
         cv2.imwrite(vis_path, to_plot)
         # subset indicated how many peoples foun in this image.
         append_result(img_ids[i], subset, candidate, outputs)
 
-
-        # cv2.imshow('test', canvas)
-        # cv2.waitKey(0)
-    # Eval and show the final result!
+        # Eval and show the final result!
     return eval_coco(outputs=outputs, dataDir=anno_dir, imgIds=img_ids)

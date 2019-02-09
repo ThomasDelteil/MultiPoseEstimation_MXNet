@@ -1,4 +1,5 @@
 import math
+import time 
 
 import cv2
 import matplotlib.cm
@@ -39,17 +40,17 @@ NUM_JOINTS = 18
 NUM_LIMBS = len(joint_to_limb_heatmap_relationship)
 
 
-def find_peaks(param, img):
+def find_peaks(minimum_activation, img):
     """
     Given a (grayscale) image, find local maxima whose value is above a given
-    threshold (param['thre1'])
+    threshold minimum_activation
     :param img: Input image (2d array) where we want to find peaks
     :return: 2d np.array containing the [x,y] coordinates of each peak found
     in the image
     """
 
     peaks_binary = (maximum_filter(img, footprint=generate_binary_structure(
-        2, 1)) == img) * (img > param['thre1'])
+        2, 1)) == img) * (img > minimum_activation)
     # Note reverse ([::-1]): we return [[x y], [x y]...] instead of [[y x], [y
     # x]...]
     return np.array(np.nonzero(peaks_binary)[::-1]).T
@@ -81,7 +82,7 @@ def compute_resized_coords(coords, resizeFactor):
     return (np.array(coords, dtype=float) + 0.5) * resizeFactor - 0.5
 
 
-def NMS(param, heatmaps, upsampFactor=1., bool_refine_center=True, bool_gaussian_filt=False):
+def NMS(minimum_activation, heatmaps, upsampFactor=1., bool_refine_center=True, bool_gaussian_filt=False):
     """
     NonMaximaSuppression: find peaks (local maxima) in a set of grayscale images
     :param heatmaps: set of grayscale images on which to find local maxima (3d np.array,
@@ -118,7 +119,7 @@ def NMS(param, heatmaps, upsampFactor=1., bool_refine_center=True, bool_gaussian
 
     for joint in range(NUM_JOINTS):
         map_orig = heatmaps[:, :, joint]
-        peak_coords = find_peaks(param, map_orig)
+        peak_coords = find_peaks(minimum_activation, map_orig)
         peaks = np.zeros((len(peak_coords), 4))
         for i, peak in enumerate(peak_coords):
             if bool_refine_center:
@@ -161,7 +162,7 @@ def NMS(param, heatmaps, upsampFactor=1., bool_refine_center=True, bool_gaussian
     return joint_list_per_joint_type
 
 
-def find_connected_joints(param, paf_upsamp, joint_list_per_joint_type, num_intermed_pts=10):
+def find_connected_joints(threshold_path_min_val, paf_upsamp, joint_list_per_joint_type, num_intermed_pts=10):
     """
     For every type of limb (eg: forearm, shin, etc.), look for every potential
     pair of joints (eg: every wrist-elbow combination) and evaluate the PAFs to
@@ -228,7 +229,7 @@ def find_connected_joints(param, paf_upsamp, joint_list_per_joint_type, num_inte
                     # Criterion 1: At least 80% of the intermediate points have
                     # a score higher than thre2
                     criterion1 = (np.count_nonzero(
-                        score_intermed_pts > param['thre2']) > 0.8 * num_intermed_pts)
+                        score_intermed_pts > threshold_path_min_val) > 0.8 * num_intermed_pts)
                     # Criterion 2: Mean score, penalized for large limb
                     # distances (larger than half the image height), is
                     # positive
@@ -362,7 +363,7 @@ def plot_pose(img_orig, joint_list, person_to_joint_assoc, bool_fast_plot=True, 
     to_plot = canvas.copy() if bool_fast_plot else cv2.addWeighted(
         img_orig, 0.3, canvas, 0.7, 0)
 
-    limb_thickness = 4
+    limb_thickness = 2
     # Last 2 limbs connect ears with shoulders and this looks very weird.
     # Disabled by default to be consistent with original rtpose output
     which_limbs_to_plot = NUM_LIMBS if plot_ear_to_shoulder else NUM_LIMBS - 2
@@ -377,57 +378,47 @@ def plot_pose(img_orig, joint_list, person_to_joint_assoc, bool_fast_plot=True, 
             # joint_coords[:,0] represents Y coords of both joints;
             # joint_coords[:,1], X coords
             joint_coords = joint_list[joint_indices, 0:2]
-            
+            joint_coords=joint_coords.astype(int)
+            cv2.line(canvas, (joint_coords[0,0],joint_coords[0,1]), (joint_coords[1,0], joint_coords[1,1]), colors[limb_type],2)
             for joint in joint_coords:  # Draw circles at every joint
-                cv2.circle(canvas, tuple(joint[0:2].astype(
-                    int)), 4, (255,255,255), thickness=-1)            
-            # mean along the axis=0 computes meanYcoord and meanXcoord -> Round
-            # and make int to avoid errors
-            coords_center = tuple(
-                np.round(np.mean(joint_coords, 0)).astype(int))
-            # joint_coords[0,:] is the coords of joint_src; joint_coords[1,:]
-            # is the coords of joint_dst
-            limb_dir = joint_coords[0, :] - joint_coords[1, :]
-            limb_length = np.linalg.norm(limb_dir)
-            # Get the angle of limb_dir in degrees using atan2(limb_dir_x,
-            # limb_dir_y)
-            angle = math.degrees(math.atan2(limb_dir[1], limb_dir[0]))
-
-            # For faster plotting, just plot over canvas instead of constantly
-            # copying it
-            cur_canvas = canvas if bool_fast_plot else canvas.copy()
-            polygon = cv2.ellipse2Poly(
-                coords_center, (int(limb_length / 2), limb_thickness), int(angle), 0, 360, 1)
-            cv2.fillConvexPoly(cur_canvas, polygon, colors[limb_type])
-            if not bool_fast_plot:
-                canvas = cv2.addWeighted(canvas, 0.4, cur_canvas, 0.6, 0)
-
-    return to_plot, canvas
+                cv2.circle(canvas, tuple(joint[0:2].astype(int)), 2, (255,255,255), thickness=-1)            
+                    
+    return to_plot, ((img_orig.astype('float32')*0.3+canvas.astype('float32')*0.7)).astype('uint8')
 
 
-def decode_pose(img_orig, param, heatmaps, pafs):
+def decode_pose(img_orig, heatmaps, pafs, threshold_path_min_val=0.1, minimum_activation=0.1):
     # Bottom-up approach:
     # Step 1: find all joints in the image (organized by joint type: [0]=nose,
     # [1]=neck...)
-    joint_list_per_joint_type = NMS(param,
+    tic = time.time()
+    joint_list_per_joint_type = NMS(minimum_activation,
                                     heatmaps, img_orig.shape[0] / float(heatmaps.shape[0]))
+    #print("-Get all joints", time.time()-tic)
+    tic = time.time()
     # joint_list is an unravel'd version of joint_list_per_joint, where we add
     # a 5th column to indicate the joint_type (0=nose, 1=neck...)
     joint_list = np.array([tuple(peak) + (joint_type,) for joint_type,
                            joint_peaks in enumerate(joint_list_per_joint_type) for peak in joint_peaks])
-
+    #print("-Unravel joints", time.time()-tic)
+    tic = time.time()
     # Step 2: find which joints go together to form limbs (which wrists go
     # with which elbows)
     paf_upsamp = cv2.resize(
         pafs, (img_orig.shape[1], img_orig.shape[0]), interpolation=cv2.INTER_CUBIC)
-    connected_limbs = find_connected_joints(param,
+    connected_limbs = find_connected_joints(minimum_activation,
                                             paf_upsamp, joint_list_per_joint_type)
+    #print("-Connect limbs", time.time()-tic)
+    tic = time.time()
 
     # Step 3: associate limbs that belong to the same person
     person_to_joint_assoc = group_limbs_of_same_person(
         connected_limbs, joint_list)
-
+    #print("-Connect limbs to people", time.time()-tic)
+    tic = time.time()
+    
     # (Step 4): plot results
     to_plot, canvas = plot_pose(img_orig, joint_list, person_to_joint_assoc)
-
+    #print("-Create pose canvas", time.time()-tic)
+    tic = time.time()
+    
     return to_plot, canvas, joint_list, person_to_joint_assoc

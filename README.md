@@ -7,30 +7,29 @@ Code repo for reproducing 2017 CVPR Oral paper using MXNet.
 
 ## Require
 1. [MXNet](http://mxnet.io)
-2. pip install tensorflow mxboard
+2. pip install mxnet-cu92 tensorflow mxboard
 3. pip install pycocotools
 
 ## Evalute
-- `python evaluate/evaluation.py` to evaluate the model on [images seperated by the original author](https://github.com/CMU-Perceptual-Computing-Lab/caffe_rtpose/blob/master/image_info_val2014_1k.txt)
+- `python evaluate.py` to evaluate the model on [images separated by the original author](https://github.com/CMU-Perceptual-Computing-Lab/caffe_rtpose/blob/master/image_info_val2014_1k.txt)
 - It should have `mAP 0.598` for the original rtpose, original repo have `mAP 0.577` because we do left and right flip for heatmap and PAF for the evaluation. 
 
 ### Pretrained Models & Performance on the dataset split by the original rtpose.
 
-|   Reported on paper (VGG19)| mAP in this repo (VGG19)| Trained from scratch in the original repo| 
-|  :------:     | :---------: | :---------: |
-|   0.577      | 0.598     |  **0.614** |
+|   Reported on paper (VGG19)| mAP in origin repo (VGG19)| map in PyTorch Repo (VGG19)| mAP in this Repo (resnet18 inspired by SimplePose) |
+|  :------:                  | :---------:               | :---------:                | :---------:                                        | 
+|   0.577                    | 0.598                     |  0.614      |              |                                                    |
 
 
 
 ## Training
-- `cd training; bash getData.sh` to obtain the COCO images in `dataset/COCO/images/`, keypoints annotations in `dataset/COCO/annotations/`
-- Download the mask of the unlabeled person at [Dropbox](https://www.dropbox.com/s/bd9ty7b4fqd5ebf/mask.tar.gz?dl=0) in `training/datasets/COCO/mask`
-- Download the official training format at [Dropbox](https://www.dropbox.com/s/0sj2q24hipiiq5t/COCO.json?dl=0) in `training/datasets/COCO.json`
+- `cd data; bash getData.sh` to obtain the COCO images in `data/dataset/COCO/images/`, keypoints annotations in `data/dataset/COCO/annotations/`
+- Download the mask of the unlabeled person at [Dropbox](https://www.dropbox.com/s/bd9ty7b4fqd5ebf/mask.tar.gz?dl=0) in `data/dataset/COCO/mask`
+- Download the official training format at [Dropbox](https://www.dropbox.com/s/0sj2q24hipiiq5t/COCO.json?dl=0) in `data/dataset/COCO.json`
 
 then run:
 
-
-`python train_model.py --gpu_ids 0 --lr=1 --wd=0.00001 --momentum=0.9 --log_key="lr_1_wd_0.0001_momentum_0.9"`
+`python train_model.py --gpu_ids 0 --lr=0.001 --wd=0.00001 --momentum=0.9 --log_key="lr_1_wd_0.0001_momentum_0.9"`
 
 <img width="356" alt="screen shot 2018-12-20 at 4 51 40 pm" src="https://user-images.githubusercontent.com/3716307/50296004-b8d48480-0479-11e9-8197-57b4c5ce123b.png">
 
